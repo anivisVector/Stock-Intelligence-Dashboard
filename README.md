@@ -4,10 +4,16 @@ Mini financial data platform built with **Python + Flask + pandas + yfinance + S
 
 ## Features
 
-- Fetches and stores daily stock OHLCV data for:
-  - `INFY.NS`
-  - `TCS.NS`
-  - `RELIANCE.NS`
+- Dashboard reads OHLCV time series from local CSVs under `data/{symbol}.csv`.
+- Comes with demo CSVs for these symbols:
+  - `INFY` (Infosys)
+  - `TCS` (Tata Consultancy Services)
+  - `RELIANCE` (Reliance Industries)
+  - `HDFCBANK` (HDFC Bank)
+  - `ICICIBANK` (ICICI Bank)
+  - `SBIN` (State Bank of India)
+  - `WIPRO` (Wipro Ltd)
+  - `HCLTECH` (HCL Technologies)
 - Cleans data (missing values, date conversion, sorted by date)
 - Calculates metrics:
   - Daily Return = (Close - Open) / Open
@@ -19,7 +25,7 @@ Mini financial data platform built with **Python + Flask + pandas + yfinance + S
 - Chart.js dashboard:
   - Company list (left)
   - Company chart + MA(7)
-  - Filter buttons (30/90 days)
+  - Filter buttons (30d / 90d / 1y)
   - Compare two stocks chart
   - Summary metrics
   - Top gainer / top loser
@@ -49,7 +55,7 @@ python app.py
 
 Open: http://127.0.0.1:5000
 
-On first run, the app creates `stocks.db` and downloads data from Yahoo Finance.
+Note: the Flask app uses the CSV files in `data/`. You can replace those CSVs with your own data as long as they include a `Date` column and a valid `Close` column.
 
 ## Project Structure
 
@@ -57,12 +63,14 @@ On first run, the app creates `stocks.db` and downloads data from Yahoo Finance.
 project/
   app.py
   data_fetcher.py
+  data/
   requirements.txt
   README.md
   templates/
     index.html
   static/
     script.js
+  stocks.db
 ```
 
 ## API Documentation
@@ -74,9 +82,10 @@ Example response:
 
 ```json
 [
-  {"symbol": "INFY.NS", "name": "Infosys"},
-  {"symbol": "TCS.NS", "name": "Tata Consultancy Services"},
-  {"symbol": "RELIANCE.NS", "name": "Reliance Industries"}
+  {"symbol": "HCLTECH", "name": "HCL Technologies"},
+  {"symbol": "HDFCBANK", "name": "HDFC Bank"},
+  {"symbol": "ICICIBANK", "name": "ICICI Bank"},
+  {"symbol": "INFY", "name": "Infosys"}
 ]
 ```
 
@@ -87,7 +96,8 @@ Query params:
 - `days` (optional, int): number of latest rows to return (e.g. 30 or 90)
 
 Example:
-- `/data/INFY.NS?days=30`
+- `/data/INFY?days=30`
+- `/data/INFY?days=365`
 
 Example response (truncated):
 
@@ -128,13 +138,13 @@ Example response:
 Compares closing prices for two symbols on matching dates.
 
 Example:
-- `/compare?symbol1=INFY.NS&symbol2=TCS.NS&days=90`
+- `/compare?symbol1=INFY&symbol2=TCS&days=90`
 
 Example response (truncated):
 
 ```json
 [
-  {"date": "2026-01-02", "INFY.NS": 1588.2, "TCS.NS": 3980.4}
+  {"date": "2026-01-02", "INFY": 1588.2, "TCS": 3980.4}
 ]
 ```
 
@@ -145,7 +155,7 @@ Example response:
 
 ```json
 {
-  "symbol": "TCS.NS",
+  "symbol": "TCS",
   "date": "2026-03-31",
   "close": 4010.5,
   "daily_return": 0.021
@@ -159,7 +169,7 @@ Example response:
 
 ```json
 {
-  "symbol": "INFY.NS",
+  "symbol": "INFY",
   "date": "2026-03-31",
   "close": 1592.2,
   "daily_return": -0.013
@@ -168,5 +178,5 @@ Example response:
 
 ## Notes / Error Handling
 
-- If Yahoo Finance is temporarily unavailable, the server still starts; APIs may return helpful errors until data is refreshed.
-- If Yahoo Finance is blocked/rate-limited in your network, `fetch_stock_data()` will retry and then fall back to an **offline sample dataset** (last ~1 year of business days) so the dashboard remains usable for demos.
+- If a CSV is missing/invalid for a symbol, the API returns empty JSON (`[]` or `{}`) instead of crashing.
+- `data_fetcher.py` is a separate utility that can download data via yfinance and store it into `stocks.db`.
