@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Stock Intelligence</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/static/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  </head>
+  <body>
+    <div class="loading-overlay show" id="appLoading" aria-hidden="false">
+      <div class="loading-box">
+        <div class="spinner"></div>
+        <div class="fw-700">Loading market data</div>
+        <div class="subtle" id="loadingHint">Preparing dashboard…</div>
+      </div>
+    </div>
+
+    <div class="app">
+      <header class="navbar">
+        <div class="nav-inner">
+          <div class="brand">
+            <div class="logo" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M3 17h2.5l4.2-8.4 3.3 5.2 2.6-4 4.4 7.2H21v2H3v-2z"/></svg>
+            </div>
+            <div>
+              <div class="fs-14">Stock Intelligence</div>
+              <div class="subtle" id="statusText">Loading…</div>
+            </div>
+          </div>
+
+          <div class="nav-actions">
+            <div class="pills" role="tablist" aria-label="Date range">
+              <button class="pill active" id="btn30" type="button">30d</button>
+              <button class="pill" id="btn90" type="button">90d</button>
+              <button class="pill" id="btn1y" type="button">1y</button>
+            </div>
+
+            <button class="btn icon-btn" id="themeToggle" type="button" title="Toggle theme">
+              <svg viewBox="0 0 24 24"><path d="M12 18a6 6 0 1 1 0-12 6 6 0 0 1 0 12zm0-16h0m0 20h0M2 12h0m20 12h0M4.2 4.2h0m15.6 15.6h0M19.8 4.2h0M4.2 19.8h0"/></svg>
+              Theme
+            </button>
+
+            <button class="btn primary" id="navCompare" type="button">
+              <svg viewBox="0 0 24 24"><path fill="white" d="M4 19h3V5H4v14zm6 0h3V9h-3v10zm6 0h3V3h-3v16z"/></svg>
+              Compare
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <div class="shell">
+        <div class="grid">
+          <aside class="glass sidebar">
+            <div class="sidebar-inner">
+              <div class="h1">Companies</div>
+              <div class="subtle sidebar-hint">Loaded from <span class="mono">data/{symbol}.csv</span></div>
+              <div class="search" role="search">
+                <svg viewBox="0 0 24 24"><path d="M21 20l-5.2-5.2a7 7 0 1 0-1 1L20 21l1-1zM10 16a6 6 0 1 1 0-12 6 6 0 0 1 0 12z"/></svg>
+                <input id="companySearch" type="text" placeholder="Search (e.g. INFY)" autocomplete="off" />
+                <kbd>/</kbd>
+              </div>
+              <div class="company-list" id="companyList" aria-label="Company list"></div>
+            </div>
+          </aside>
+
+          <main class="main">
+            <div class="alert" id="errorBox" role="alert"></div>
+
+            <div class="active-header glass" aria-label="Active symbol header">
+              <div class="active-title">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17h2.5l4.2-8.4 3.3 5.2 2.6-4 4.4 7.2H21v2H3v-2z"/></svg>
+                <div>
+                  <div class="fw-800">Active Symbol</div>
+                  <div class="subtle">Currently viewing <span class="mono" id="activeSymbol">—</span></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="content-top" aria-label="Top panels">
+              <section class="glass card top-card price-summary" aria-label="Price summary">
+                <div class="card-head">
+                  <div class="section-title">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19h16v2H4v-2zm2-2V5h2v12H6zm5 0V9h2v8h-2zm5 0V3h2v14h-2z"/></svg>
+                    <div>
+                      <div class="h1">Price</div>
+                      <div class="subtle">Symbol: <span id="activeSymbol2">—</span></div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="price-row" aria-label="Price row">
+                  <div class="hero-price" aria-label="Latest price">
+                    <div class="hero-value" id="statPrice" data-raw="" data-pct="">—</div>
+                    <div class="hero-change">
+                      <span class="hero-pct" id="statChangePct">—</span>
+                      <span class="subtle" id="statChangeAbs">—</span>
+                      <span class="trend" id="statTrend" aria-hidden="true"></span>
+                    </div>
+                    <div class="hero-meta subtle">Vol: <span id="statVolume">—</span></div>
+                  </div>
+
+                  <div class="meter" id="volMeter" aria-label="Volatility meter">
+                    <div class="meter-center">
+                      <div class="meter-num" id="volMeterValue">—</div>
+                      <div class="meter-subtle">Volatility</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="chips" aria-label="Insight chips">
+                  <div class="chip" id="chipTrend">Trend</div>
+                  <div class="chip" id="chipRisk">Risk</div>
+                  <div class="chip" id="chipVol">Vol</div>
+                </div>
+              </section>
+
+              <section class="glass card top-card compare-panel" id="compareSection" aria-label="Compare">
+                <div class="compare-head">
+                  <div class="section-title">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19h3V5H4v14zm6 0h3V9h-3v10zm6 0h3V3h-3v16z"/></svg>
+                    <div>
+                      <div class="h1">Compare</div>
+                      <div class="subtle">Two symbols · close overlay</div>
+                    </div>
+                  </div>
+                  <button class="btn primary" id="btnCompare" type="button">Run</button>
+                </div>
+
+                <div class="compare-grid">
+                  <select class="select" id="cmp1" aria-label="Symbol 1"></select>
+                  <select class="select" id="cmp2" aria-label="Symbol 2"></select>
+                </div>
+
+                <div class="chart-wrap">
+                  <canvas id="compareChart" class="chart-canvas"></canvas>
+                  <div class="chart-overlay" id="compareLoading"><div class="spinner"></div></div>
+                  <div class="empty" id="compareEmpty">
+                    <div class="empty-title">No comparison yet</div>
+                    <div class="subtle">Pick two symbols and run.</div>
+                  </div>
+                </div>
+              </section>
+            </div>
+
+            <section class="glass card chart-card" aria-label="Main chart">
+              <div class="card-head">
+                <div class="section-title">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h18v18H3V3zm2 2v14h14V5H5zm2 10 2-3 2 2 3-5 3 6 2-3v3H7v-0z"/></svg>
+                  <div>
+                    <div class="h1">Main Chart</div>
+                    <div class="subtle">Close + MA(7)</div>
+                  </div>
+                </div>
+                <div class="pills" aria-label="Series toggles">
+                  <button class="pill active" id="toggleClose" type="button">Close</button>
+                  <button class="pill active" id="toggleMA" type="button">MA(7)</button>
+                </div>
+              </div>
+
+              <div class="chart-wrap chart-panel" aria-label="Price chart container">
+                <canvas id="priceChart" class="chart-canvas"></canvas>
+                <div class="chart-overlay" id="priceLoading"><div class="spinner"></div></div>
+                <div class="empty" id="priceEmpty">
+                  <div class="empty-title">No price data</div>
+                  <div class="subtle">Try another symbol or wait for refresh.</div>
+                </div>
+              </div>
+            </section>
+
+            <section class="metrics" aria-label="Key metrics">
+                  <div class="glass metric accent-primary" data-tip="Highest rolling high over the last ~252 trading days.">
+                    <div class="left">
+                      <div class="icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M12 2l3.2 6.6 7.3 1.1-5.3 5.2 1.3 7.3L12 18.9 5.5 22.2l1.3-7.3L1.5 9.7l7.3-1.1L12 2z"/></svg>
+                      </div>
+                      <div>
+                        <div class="label">52W High</div>
+                        <div class="value"><span id="metricHigh">—</span> <span class="trend" id="trendHigh" aria-hidden="true"></span></div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="glass metric accent-danger" data-tip="Lowest rolling low over the last ~252 trading days.">
+                    <div class="left">
+                      <div class="icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M12 22l-4-4h3V3h2v15h3l-4 4z"/></svg>
+                      </div>
+                      <div>
+                        <div class="label">52W Low</div>
+                        <div class="value"><span id="metricLow">—</span> <span class="trend" id="trendLow" aria-hidden="true"></span></div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="glass metric accent-primary" data-tip="Mean close price over the selected window.">
+                    <div class="left">
+                      <div class="icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M4 19h16v2H4v-2zm2-2V5h2v12H6zm5 0V9h2v8h-2zm5 0V3h2v14h-2z"/></svg>
+                      </div>
+                      <div>
+                        <div class="label">Avg Close</div>
+                        <div class="value"><span id="metricAvg">—</span> <span class="trend" id="trendAvg" aria-hidden="true"></span></div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="glass metric accent-success" data-tip="Std. deviation of daily returns over the last 30 days.">
+                    <div class="left">
+                      <div class="icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 17h-2v-2h2zm1.8-7.3-.9.9A3 3 0 0 0 13 15h-2v-.5a4.5 4.5 0 0 1 1.3-3.2l1.2-1.2a1.7 1.7 0 1 0-2.9-1.2H8.8a3.9 3.9 0 1 1 6 3z"/></svg>
+                      </div>
+                      <div>
+                        <div class="label">Volatility</div>
+                        <div class="value"><span id="metricVol">—</span> <span class="trend" id="trendVol" aria-hidden="true"></span></div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+            <section class="movers" aria-label="Top movers">
+              <div class="glass mover">
+                <div class="badge up" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M12 4l7 7h-4v9H9v-9H5l7-7z"/></svg>
+                </div>
+                <div>
+                  <div class="title">Top Gainer</div>
+                  <div class="fw-700 mt-2" id="gainerSymbol">—</div>
+                  <div class="meta" id="gainerMeta">—</div>
+                </div>
+              </div>
+
+              <div class="glass mover">
+                <div class="badge down" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M12 20l-7-7h4V4h6v9h4l-7 7z"/></svg>
+                </div>
+                <div>
+                  <div class="title">Top Loser</div>
+                  <div class="fw-700 mt-2" id="loserSymbol">—</div>
+                  <div class="meta" id="loserMeta">—</div>
+                </div>
+              </div>
+            </section>
+
+            <footer class="footer" aria-label="Footer">
+              <div class="footer-inner">
+                <div class="subtle">Stock Intelligence Dashboard</div>
+                <div class="subtle">Data source: Yahoo Finance (via yfinance) · Offline fallback supported</div>
+              </div>
+            </footer>
+          </main>
+        </div>
+      </div>
+    </div>
+
+    <script src="/static/script.js"></script>
+  </body>
+</html>
