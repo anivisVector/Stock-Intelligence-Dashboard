@@ -921,3 +921,45 @@ kbd{
   border-radius: 8px;
   background: rgba(255,255,255,.04);
 }
+
+/* Responsive tweaks (mobile/tablet) */
+@media (max-width: 720px){
+  .app{grid-template-rows:auto 1fr}
+  .navbar{height:auto}
+  .nav-inner{flex-wrap:wrap; align-items:flex-start; padding:10px 14px}
+  .nav-actions{justify-content:flex-start}
+
+  .shell{padding:12px}
+  .card{padding:12px}
+  .chart-card{padding:12px}
+
+  .sidebar{position:relative; top:auto; max-height:none}
+  .company-list{max-height:280px}
+
+  .compare-panel .chart-wrap{height:auto; min-height:170px}
+}
+
+@media (max-width: 520px){
+  .nav-inner{padding:10px 12px}
+  .shell{padding:10px}
+
+  .logo{width:32px; height:32px; border-radius:12px}
+  .btn{padding:8px 10px; border-radius:14px}
+  .pill{padding:7px 9px}
+
+  .hero-value{font-size:30px}
+  .meter{width:104px; height:104px}
+  .meter::after{inset:7px}
+
+  .chart-canvas{max-height:340px}
+
+  .company-item{padding:9px 10px}
+  .avatar{width:32px; height:32px}
+}
+
+@media (max-width: 380px){
+  .hero-value{font-size:26px}
+  .nav-inner{gap:10px}
+  .pills{gap:6px}
+  .meter{width:96px; height:96px}
+}
