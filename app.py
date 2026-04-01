@@ -577,7 +577,11 @@ def create_app() -> Flask:
     return app
 
 
+# Expose a module-level WSGI application for production servers (e.g. Render/Gunicorn).
+# This keeps the entry point stable: `gunicorn app:app`.
+app = create_app()
+
+
 if __name__ == "__main__":
-    app = create_app()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
