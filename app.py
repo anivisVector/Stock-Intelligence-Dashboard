@@ -500,15 +500,37 @@ def create_app() -> Flask:
     )
     app = Flask(__name__)
 
+    cache_bust = (
+        os.getenv("RENDER_GIT_COMMIT")
+        or os.getenv("GITHUB_SHA")
+        or os.getenv("COMMIT_SHA")
+        or str(int(datetime.utcnow().timestamp()))
+    )
+
     # Seed demo CSVs so the app works without manual data setup.
     try:
         _seed_sample_csvs()
     except Exception as exc:  # noqa: BLE001
         app.logger.exception("CSV seeding failed: %s", exc)
 
+    @app.after_request
+    def _no_cache(response):
+        """Avoid stale responses (especially for local/dev and redeploys)."""
+        p = request.path or ""
+        if (
+            p == "/companies"
+            or p == "/compare"
+            or p == "/top-gainers"
+            or p == "/top-losers"
+            or p.startswith("/data/")
+            or p.startswith("/summary/")
+        ):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
     @app.get("/")
     def index():
-        return render_template("index.html")
+        return render_template("index.html", cache_bust=cache_bust)
 
     @app.get("/companies")
     def companies():
@@ -602,4 +624,5 @@ app = create_app()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    debug = os.getenv("FLASK_DEBUG") == "1" or os.getenv("DEBUG") == "1"
+    app.run(host="0.0.0.0", port=port, debug=debug, use_reloader=debug)

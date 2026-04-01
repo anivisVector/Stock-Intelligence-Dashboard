@@ -431,7 +431,7 @@ async function loadSummary(symbol) {
   document.getElementById('metricVol').textContent = fmtNum(summary.volatility, 6);
 
   // Trend arrows are contextual: based on current price vs the metric value.
-  const lastPrice = Number(document.getElementById('statPrice')?.dataset?.raw || NaN);
+  const lastPrice = Number(document.getElementById('statPrice')?.dataset?.last || NaN);
   const high = Number(summary['52_week_high']);
   const low = Number(summary['52_week_low']);
   const avg = Number(summary.average_close);
@@ -535,30 +535,37 @@ async function loadCompany(symbol) {
   }
 
   // Header stats: last price, change, volume
+  const first = rows[0];
   const last = rows[rows.length - 1];
-  const prev = rows.length > 1 ? rows[rows.length - 2] : null;
+  const firstClose = Number(first?.close);
   const lastClose = Number(last?.close);
-  const prevClose = Number(prev?.close);
   const volume = last?.volume;
 
   const elPrice = document.getElementById('statPrice');
 
+  // Make the main "Price" value depend on the selected range:
+  // show the *start* close of the selected window.
+  // Store the window-end close separately for comparisons in other UI bits.
+  elPrice.dataset.last = Number.isFinite(lastClose) ? String(lastClose) : '';
+
   const prevRaw = Number(elPrice?.dataset?.raw || NaN);
-  if (Number.isFinite(lastClose)) {
-    if (Number.isFinite(prevRaw) && Math.abs(lastClose - prevRaw) > 0) {
-      animateMoney(elPrice, prevRaw, lastClose);
+  if (Number.isFinite(firstClose)) {
+    if (Number.isFinite(prevRaw) && Math.abs(firstClose - prevRaw) > 0) {
+      animateMoney(elPrice, prevRaw, firstClose);
     } else {
-      elPrice.textContent = fmtMoney(lastClose);
+      elPrice.textContent = fmtMoney(firstClose);
     }
-    elPrice.dataset.raw = String(lastClose);
+    elPrice.dataset.raw = String(firstClose);
   } else {
     elPrice.textContent = '—';
     elPrice.dataset.raw = '';
+    elPrice.dataset.last = '';
   }
 
-  if (Number.isFinite(lastClose) && Number.isFinite(prevClose) && prevClose !== 0) {
-    const delta = lastClose - prevClose;
-    const pct = (delta / prevClose) * 100;
+  // Change is the return over the selected window (start -> end)
+  if (Number.isFinite(firstClose) && Number.isFinite(lastClose) && firstClose !== 0) {
+    const delta = lastClose - firstClose;
+    const pct = (delta / firstClose) * 100;
     elPrice.dataset.pct = Number.isFinite(pct) ? String(pct) : '';
     document.getElementById('statChangePct').textContent = `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
     document.getElementById('statChangeAbs').textContent = `(${delta >= 0 ? '+' : ''}${delta.toFixed(2)})`;
