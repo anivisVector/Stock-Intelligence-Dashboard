@@ -404,14 +404,16 @@ def _df_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return _safe_json(records)
 
 
-def _summary_for(symbol: str) -> dict[str, Any]:
+def _summary_for(symbol: str, *, days: int = 30) -> dict[str, Any]:
     records = _read_csv_safe(symbol)
     if not records:
         raise DataError(f"No data for symbol: {symbol}")
 
-    last30 = records[-30:]
-    closes = np.array([r.get("close") for r in last30], dtype=float)
-    rets = np.array([r.get("daily_return") for r in last30], dtype=float)
+    window = max(1, int(days))
+    window_records = records[-window:]
+
+    closes = np.array([r.get("close") for r in window_records], dtype=float)
+    rets = np.array([r.get("daily_return") for r in window_records], dtype=float)
     closes = closes[np.isfinite(closes)]
     rets = rets[np.isfinite(rets)]
 
@@ -421,13 +423,24 @@ def _summary_for(symbol: str) -> dict[str, Any]:
     avg_close = None if (isinstance(avg_val, float) and np.isnan(avg_val)) else avg_val
     vol = None if (isinstance(vol_val, float) and np.isnan(vol_val)) else vol_val
 
-    latest = records[-1]
-    high_52w = latest.get("high_52w")
-    low_52w = latest.get("low_52w")
+    # Compute range high/low from the filtered dataset so the UI updates with 30d/90d/1y.
+    highs = np.array([r.get("high") for r in window_records], dtype=float)
+    lows = np.array([r.get("low") for r in window_records], dtype=float)
+
+    # Fall back to close if OHLC high/low are missing.
+    if not np.isfinite(highs).any():
+        highs = np.array([r.get("close") for r in window_records], dtype=float)
+    if not np.isfinite(lows).any():
+        lows = np.array([r.get("close") for r in window_records], dtype=float)
+
+    highs = highs[np.isfinite(highs)]
+    lows = lows[np.isfinite(lows)]
+    range_high = float(np.max(highs)) if len(highs) else None
+    range_low = float(np.min(lows)) if len(lows) else None
 
     return {
-        "52_week_high": high_52w,
-        "52_week_low": low_52w,
+        "52_week_high": range_high,
+        "52_week_low": range_low,
         "average_close": avg_close,
         "volatility": vol,
     }
@@ -527,7 +540,12 @@ def create_app() -> Flask:
             sym = _norm_symbol(symbol)
             if sym not in COMPANIES:
                 return jsonify({"error": f"Unknown symbol: {sym}"}), 404
-            return jsonify(_safe_json(_summary_for(sym)))
+            days = request.args.get("days", default="30")
+            try:
+                days_int = int(days)
+            except ValueError:
+                return jsonify({"error": "Invalid 'days' query parameter"}), 400
+            return jsonify(_safe_json(_summary_for(sym, days=days_int)))
         except DataError as exc:
             # Return empty JSON ({}) when summary can't be computed.
             app.logger.info("Summary unavailable for %s: %s", symbol, exc)

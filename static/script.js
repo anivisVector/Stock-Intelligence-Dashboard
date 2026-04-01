@@ -424,7 +424,7 @@ function setActiveFilter(days) {
 }
 
 async function loadSummary(symbol) {
-  const summary = await apiGet(`/summary/${encodeURIComponent(symbol)}`);
+  const summary = await apiGet(`/summary/${encodeURIComponent(symbol)}?days=${activeDays}`);
   document.getElementById('metricHigh').textContent = fmtNum(summary['52_week_high']);
   document.getElementById('metricLow').textContent = fmtNum(summary['52_week_low']);
   document.getElementById('metricAvg').textContent = fmtNum(summary.average_close);
