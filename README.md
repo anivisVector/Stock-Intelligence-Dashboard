@@ -1,6 +1,6 @@
 # Stock Data Intelligence Dashboard
 
-Mini financial data platform built with **Python + Flask + pandas + yfinance + SQLite + Chart.js**.
+Mini stock dashboard built with **Python + Flask + NumPy + Chart.js**.
 
 ## Features
 
@@ -57,6 +57,13 @@ Open: http://127.0.0.1:5000
 
 Note: the Flask app uses the CSV files in `data/`. You can replace those CSVs with your own data as long as they include a `Date` column and a valid `Close` column.
 
+## Deploy (Render)
+
+- Build command: `pip install -r requirements.txt`
+- Start command (app factory): `gunicorn --bind 0.0.0.0:$PORT "app:create_app()"`
+
+This repo includes `runtime.txt` / `render.yaml` for Render configuration.
+
 ## Project Structure
 
 ```
@@ -66,6 +73,8 @@ project/
   data/
   requirements.txt
   README.md
+  runtime.txt
+  render.yaml
   templates/
     index.html
   static/
@@ -179,4 +188,6 @@ Example response:
 ## Notes / Error Handling
 
 - If a CSV is missing/invalid for a symbol, the API returns empty JSON (`[]` or `{}`) instead of crashing.
-- `data_fetcher.py` is a separate utility that can download data via yfinance and store it into `stocks.db`.
+- `data_fetcher.py` is an optional utility that can download data via yfinance and store it into `stocks.db`.
+  - It is not required for the web dashboard.
+  - If you want to run it locally, install its extra deps manually (not in `requirements.txt`): `pip install pandas yfinance requests`.
