@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import os
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pandas as pd
 from flask import Flask, jsonify, render_template, request
 
 
@@ -31,7 +32,7 @@ class DataError(Exception):
     pass
 
 
-_csv_cache: dict[str, tuple[float, pd.DataFrame]] = {}
+_csv_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 
 
 def _norm_symbol(symbol: str) -> str:
@@ -40,6 +41,252 @@ def _norm_symbol(symbol: str) -> str:
 
 def _csv_path(symbol: str) -> Path:
     return DATA_DIR / f"{symbol}.csv"
+
+
+def _parse_date_to_iso(value: Any) -> str | None:
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+
+    # Fast path: already ISO-ish (yyyy-mm-dd)
+    # Keep exactly date portion if timestamp is included.
+    if len(s) >= 10 and s[4:5] == "-" and s[7:8] == "-":
+        return s[:10]
+
+    # Try a few common formats.
+    for fmt in ("%Y/%m/%d", "%d-%m-%Y", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(s, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def _to_float(value: Any) -> float:
+    if value is None:
+        return float("nan")
+    s = str(value).strip()
+    if not s:
+        return float("nan")
+    try:
+        return float(s)
+    except ValueError:
+        return float("nan")
+
+
+def _to_int_or_nan(value: Any) -> float:
+    if value is None:
+        return float("nan")
+    s = str(value).strip()
+    if not s:
+        return float("nan")
+    try:
+        return float(int(float(s)))
+    except ValueError:
+        return float("nan")
+
+
+def _none_if_nan(x: Any) -> Any:
+    if x is None:
+        return None
+    if isinstance(x, float) and (np.isnan(x) or np.isinf(x)):
+        return None
+    return x
+
+
+def _rolling_mean(values: np.ndarray, window: int) -> np.ndarray:
+    out = np.full_like(values, np.nan, dtype=float)
+    for i in range(len(values)):
+        start = max(0, i - window + 1)
+        chunk = values[start : i + 1]
+        out[i] = float(np.nanmean(chunk)) if np.isfinite(np.nanmean(chunk)) else np.nan
+    return out
+
+
+def _rolling_max(values: np.ndarray, window: int) -> np.ndarray:
+    out = np.full_like(values, np.nan, dtype=float)
+    for i in range(len(values)):
+        start = max(0, i - window + 1)
+        out[i] = float(np.nanmax(values[start : i + 1]))
+    return out
+
+
+def _rolling_min(values: np.ndarray, window: int) -> np.ndarray:
+    out = np.full_like(values, np.nan, dtype=float)
+    for i in range(len(values)):
+        start = max(0, i - window + 1)
+        out[i] = float(np.nanmin(values[start : i + 1]))
+    return out
+
+
+def _rolling_std(values: np.ndarray, window: int, *, min_periods: int = 2) -> np.ndarray:
+    out = np.full_like(values, np.nan, dtype=float)
+    for i in range(len(values)):
+        start = max(0, i - window + 1)
+        chunk = values[start : i + 1]
+        chunk = chunk[np.isfinite(chunk)]
+        if len(chunk) < min_periods:
+            out[i] = np.nan
+        else:
+            # Match pandas default ddof=1 behavior.
+            out[i] = float(np.std(chunk, ddof=1))
+    return out
+
+
+def _enrich_records(dates: list[str], open_: np.ndarray, high: np.ndarray, low: np.ndarray, close: np.ndarray, adj_close: np.ndarray, volume: np.ndarray) -> list[dict[str, Any]]:
+    n = len(dates)
+    if n == 0:
+        return []
+
+    daily_return = np.full(n, np.nan, dtype=float)
+    for i in range(1, n):
+        prev = close[i - 1]
+        cur = close[i]
+        if np.isfinite(prev) and prev != 0 and np.isfinite(cur):
+            daily_return[i] = (cur / prev) - 1.0
+
+    ma7 = _rolling_mean(close, window=7)
+
+    # 52-week rolling values (approx 252 trading days)
+    use_high = high if np.isfinite(high).any() else close
+    use_low = low if np.isfinite(low).any() else close
+    high_52w = _rolling_max(use_high, window=252)
+    low_52w = _rolling_min(use_low, window=252)
+
+    volatility = _rolling_std(daily_return, window=30, min_periods=2)
+
+    records: list[dict[str, Any]] = []
+    for i in range(n):
+        rec: dict[str, Any] = {
+            "date": dates[i],
+            "open": _none_if_nan(float(open_[i])),
+            "high": _none_if_nan(float(high[i])),
+            "low": _none_if_nan(float(low[i])),
+            "close": _none_if_nan(float(close[i])),
+            "adj_close": _none_if_nan(float(adj_close[i])),
+            "volume": _none_if_nan(float(volume[i])),
+            "daily_return": _none_if_nan(float(daily_return[i])),
+            "ma7": _none_if_nan(float(ma7[i])),
+            "high_52w": _none_if_nan(float(high_52w[i])),
+            "low_52w": _none_if_nan(float(low_52w[i])),
+            "volatility": _none_if_nan(float(volatility[i])),
+        }
+
+        # Keep JSON strict: normalize NaN/Inf to None.
+        for k, v in list(rec.items()):
+            if isinstance(v, float) and (np.isnan(v) or np.isinf(v)):
+                rec[k] = None
+        records.append(rec)
+    return records
+
+
+def _read_csv_rows(path: Path) -> list[dict[str, Any]]:
+    with path.open("r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames:
+            raise DataError(f"Empty CSV file: {path.as_posix()}")
+
+        cols = [str(c).strip() for c in reader.fieldnames]
+        lower_map = {c.lower().replace(" ", "_"): c for c in cols}
+
+        date_col = None
+        for key in ("date", "datetime", "timestamp"):
+            if key in lower_map:
+                date_col = lower_map[key]
+                break
+        if date_col is None:
+            raise DataError("CSV must contain a 'Date' column")
+
+        def pick(*candidates: str) -> str | None:
+            for cand in candidates:
+                if cand in lower_map:
+                    return lower_map[cand]
+            return None
+
+        col_open = pick("open")
+        col_high = pick("high")
+        col_low = pick("low")
+        col_close = pick("close")
+        col_adj_close = pick("adj_close", "adjclose", "adj_close_")
+        if col_adj_close is None and "Adj Close" in cols:
+            col_adj_close = "Adj Close"
+        col_volume = pick("volume")
+
+        dates: list[str] = []
+        open_vals: list[float] = []
+        high_vals: list[float] = []
+        low_vals: list[float] = []
+        close_vals: list[float] = []
+        adj_close_vals: list[float] = []
+        volume_vals: list[float] = []
+
+        for row in reader:
+            d = _parse_date_to_iso(row.get(date_col))
+            if not d:
+                continue
+
+            dates.append(d)
+            open_vals.append(_to_float(row.get(col_open)) if col_open else float("nan"))
+            high_vals.append(_to_float(row.get(col_high)) if col_high else float("nan"))
+            low_vals.append(_to_float(row.get(col_low)) if col_low else float("nan"))
+            close_vals.append(_to_float(row.get(col_close)) if col_close else float("nan"))
+            adj_close_vals.append(_to_float(row.get(col_adj_close)) if col_adj_close else float("nan"))
+            volume_vals.append(_to_int_or_nan(row.get(col_volume)) if col_volume else float("nan"))
+
+    if not dates:
+        raise DataError(f"Empty CSV file: {path.as_posix()}")
+
+    # Sort by date and drop duplicates (keep last)
+    idx = np.argsort(np.array(dates))
+    dates_sorted = [dates[i] for i in idx]
+    open_arr = np.array([open_vals[i] for i in idx], dtype=float)
+    high_arr = np.array([high_vals[i] for i in idx], dtype=float)
+    low_arr = np.array([low_vals[i] for i in idx], dtype=float)
+    close_arr = np.array([close_vals[i] for i in idx], dtype=float)
+    adj_close_arr = np.array([adj_close_vals[i] for i in idx], dtype=float)
+    volume_arr = np.array([volume_vals[i] for i in idx], dtype=float)
+
+    dedup_dates: list[str] = []
+    dedup_open: list[float] = []
+    dedup_high: list[float] = []
+    dedup_low: list[float] = []
+    dedup_close: list[float] = []
+    dedup_adj: list[float] = []
+    dedup_vol: list[float] = []
+
+    last_seen = None
+    for i, d in enumerate(dates_sorted):
+        if d != last_seen:
+            dedup_dates.append(d)
+            dedup_open.append(float(open_arr[i]))
+            dedup_high.append(float(high_arr[i]))
+            dedup_low.append(float(low_arr[i]))
+            dedup_close.append(float(close_arr[i]))
+            dedup_adj.append(float(adj_close_arr[i]))
+            dedup_vol.append(float(volume_arr[i]))
+            last_seen = d
+        else:
+            # overwrite previous (keep last)
+            dedup_open[-1] = float(open_arr[i])
+            dedup_high[-1] = float(high_arr[i])
+            dedup_low[-1] = float(low_arr[i])
+            dedup_close[-1] = float(close_arr[i])
+            dedup_adj[-1] = float(adj_close_arr[i])
+            dedup_vol[-1] = float(volume_arr[i])
+
+    open_arr2 = np.array(dedup_open, dtype=float)
+    high_arr2 = np.array(dedup_high, dtype=float)
+    low_arr2 = np.array(dedup_low, dtype=float)
+    close_arr2 = np.array(dedup_close, dtype=float)
+    adj_arr2 = np.array(dedup_adj, dtype=float)
+    vol_arr2 = np.array(dedup_vol, dtype=float)
+
+    if not np.isfinite(close_arr2).any():
+        raise DataError("CSV must contain a valid 'Close' column")
+
+    return _enrich_records(dedup_dates, open_arr2, high_arr2, low_arr2, close_arr2, adj_arr2, vol_arr2)
 
 
 def _seed_sample_csvs() -> None:
@@ -61,9 +308,15 @@ def _seed_sample_csvs() -> None:
         "HCLTECH": 1500.0,
     }
 
-    end = pd.Timestamp.utcnow().tz_localize(None).normalize()
-    start = end - pd.Timedelta(days=365)
-    dates = pd.bdate_range(start=start, end=end)
+    end = date.today()
+    start = end - timedelta(days=365)
+    dates: list[date] = []
+    d = start
+    while d <= end:
+        # Business day (Mon-Fri)
+        if d.weekday() < 5:
+            dates.append(d)
+        d += timedelta(days=1)
 
     for sym in COMPANIES.keys():
         path = _csv_path(sym)
@@ -78,30 +331,37 @@ def _seed_sample_csvs() -> None:
 
         base = float(base_prices.get(sym, 1000.0))
         close = base * np.exp(np.cumsum(rets))
-        close = pd.Series(close, index=dates)
 
         # Build OHLC around close
-        open_ = close.shift(1).fillna(close) * (1 + pd.Series(np_rng.normal(0, 0.002, len(dates)), index=dates))
-        high = pd.concat([open_, close], axis=1).max(axis=1) * (1 + pd.Series(np_rng.uniform(0.0005, 0.01, len(dates)), index=dates))
-        low = pd.concat([open_, close], axis=1).min(axis=1) * (1 - pd.Series(np_rng.uniform(0.0005, 0.01, len(dates)), index=dates))
-        volume = pd.Series(np_rng.integers(2_000_000, 12_000_000, size=len(dates)), index=dates)
+        open_noise = np_rng.normal(0, 0.002, len(dates))
+        open_ = np.empty_like(close)
+        open_[0] = close[0]
+        open_[1:] = close[:-1]
+        open_ = open_ * (1 + open_noise)
 
-        df = pd.DataFrame(
-            {
-                "Date": dates.date,
-                "Open": open_.values,
-                "High": high.values,
-                "Low": low.values,
-                "Close": close.values,
-                "Adj Close": close.values,
-                "Volume": volume.values,
-            }
-        )
+        high = np.maximum(open_, close) * (1 + np_rng.uniform(0.0005, 0.01, len(dates)))
+        low = np.minimum(open_, close) * (1 - np_rng.uniform(0.0005, 0.01, len(dates)))
+        volume = np_rng.integers(2_000_000, 12_000_000, size=len(dates))
 
-        df.to_csv(path, index=False)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["Date", "Open", "High", "Low", "Close", "Adj Close", "Volume"])
+            for i, dt in enumerate(dates):
+                w.writerow(
+                    [
+                        dt.isoformat(),
+                        float(open_[i]),
+                        float(high[i]),
+                        float(low[i]),
+                        float(close[i]),
+                        float(close[i]),
+                        int(volume[i]),
+                    ]
+                )
 
 
-def _read_csv(symbol: str) -> pd.DataFrame:
+def _read_csv(symbol: str) -> list[dict[str, Any]]:
     symbol = _norm_symbol(symbol)
     if symbol not in COMPANIES:
         raise DataError(f"Unknown symbol: {symbol}")
@@ -114,87 +374,14 @@ def _read_csv(symbol: str) -> pd.DataFrame:
     mtime = path.stat().st_mtime
     cached = _csv_cache.get(symbol)
     if cached and cached[0] == mtime:
-        return cached[1].copy()
+        return list(cached[1])
 
-    df = pd.read_csv(path)
-    if df.empty:
-        raise DataError(f"Empty CSV file: data/{symbol}.csv")
-
-    # Normalize columns: accept common Yahoo-style names or lowercase names
-    df.columns = [str(c).strip() for c in df.columns]
-    lower_map = {c.lower().replace(" ", "_"): c for c in df.columns}
-
-    date_col = None
-    for key in ("date", "datetime", "timestamp"):
-        if key in lower_map:
-            date_col = lower_map[key]
-            break
-    if date_col is None:
-        raise DataError("CSV must contain a 'Date' column")
-
-    def pick(*candidates: str) -> str | None:
-        for cand in candidates:
-            if cand in lower_map:
-                return lower_map[cand]
-        return None
-
-    col_open = pick("open")
-    col_high = pick("high")
-    col_low = pick("low")
-    col_close = pick("close")
-    col_adj_close = pick("adj_close", "adjclose", "adj_close_")
-    if col_adj_close is None and "Adj Close" in df.columns:
-        col_adj_close = "Adj Close"
-    col_volume = pick("volume")
-
-    # Build canonical frame
-    out = pd.DataFrame()
-    out["date"] = pd.to_datetime(df[date_col], errors="coerce").dt.date.astype("string")
-    out = out.loc[out["date"].notna()]
-
-    for name, src in (
-        ("open", col_open),
-        ("high", col_high),
-        ("low", col_low),
-        ("close", col_close),
-        ("adj_close", col_adj_close),
-        ("volume", col_volume),
-    ):
-        if src is None:
-            out[name] = pd.NA
-        else:
-            out[name] = pd.to_numeric(df[src], errors="coerce")
-
-    # Require at least close to function
-    if out["close"].isna().all():
-        raise DataError("CSV must contain a valid 'Close' column")
-
-    out = out.dropna(subset=["date"]).sort_values("date")
-    out = out.drop_duplicates(subset=["date"], keep="last")
-
-    # Enrich metrics
-    out["daily_return"] = out["close"].pct_change()
-    out["ma7"] = out["close"].rolling(window=7, min_periods=1).mean()
-
-    # 52-week rolling values (approx 252 trading days)
-    if out["high"].isna().all():
-        out["high_52w"] = out["close"].rolling(window=252, min_periods=1).max()
-    else:
-        out["high_52w"] = out["high"].rolling(window=252, min_periods=1).max()
-
-    if out["low"].isna().all():
-        out["low_52w"] = out["close"].rolling(window=252, min_periods=1).min()
-    else:
-        out["low_52w"] = out["low"].rolling(window=252, min_periods=1).min()
-
-    out["volatility"] = out["daily_return"].rolling(window=30, min_periods=2).std()
-
-    # Cache canonical enriched DF
-    _csv_cache[symbol] = (mtime, out.copy())
-    return out
+    records = _read_csv_rows(path)
+    _csv_cache[symbol] = (mtime, list(records))
+    return records
 
 
-def _read_csv_safe(symbol: str) -> pd.DataFrame:
+def _read_csv_safe(symbol: str) -> list[dict[str, Any]]:
     """Best-effort CSV loader.
 
     Never raises; returns an empty DataFrame when data is missing/invalid.
@@ -205,7 +392,7 @@ def _read_csv_safe(symbol: str) -> pd.DataFrame:
     try:
         return _read_csv(symbol)
     except DataError:
-        return pd.DataFrame()
+        return []
 
 
 def _safe_json(obj: Any):
@@ -213,29 +400,30 @@ def _safe_json(obj: Any):
     return json.loads(json.dumps(obj, allow_nan=False, default=str))
 
 
-def _df_records(df: pd.DataFrame) -> list[dict[str, Any]]:
-    safe_df = df.astype(object).where(pd.notnull(df), None)
-    return _safe_json(safe_df.to_dict(orient="records"))
+def _df_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return _safe_json(records)
 
 
 def _summary_for(symbol: str) -> dict[str, Any]:
-    df = _read_csv_safe(symbol)
-    if df.empty:
+    records = _read_csv_safe(symbol)
+    if not records:
         raise DataError(f"No data for symbol: {symbol}")
 
-    df30 = df.tail(30)
-    avg_series = pd.to_numeric(df30["close"], errors="coerce").dropna()
-    vol_series = pd.to_numeric(df30["daily_return"], errors="coerce").dropna()
+    last30 = records[-30:]
+    closes = np.array([r.get("close") for r in last30], dtype=float)
+    rets = np.array([r.get("daily_return") for r in last30], dtype=float)
+    closes = closes[np.isfinite(closes)]
+    rets = rets[np.isfinite(rets)]
 
-    avg_val = float(avg_series.mean()) if not avg_series.empty else float("nan")
-    vol_val = float(vol_series.std()) if len(vol_series) >= 2 else float("nan")
+    avg_val = float(np.mean(closes)) if len(closes) else float("nan")
+    vol_val = float(np.std(rets, ddof=1)) if len(rets) >= 2 else float("nan")
 
-    avg_close = None if pd.isna(avg_val) else avg_val
-    vol = None if pd.isna(vol_val) else vol_val
+    avg_close = None if (isinstance(avg_val, float) and np.isnan(avg_val)) else avg_val
+    vol = None if (isinstance(vol_val, float) and np.isnan(vol_val)) else vol_val
 
-    latest = df.iloc[-1]
-    high_52w = float(latest["high_52w"]) if pd.notnull(latest["high_52w"]) else None
-    low_52w = float(latest["low_52w"]) if pd.notnull(latest["low_52w"]) else None
+    latest = records[-1]
+    high_52w = latest.get("high_52w")
+    low_52w = latest.get("low_52w")
 
     return {
         "52_week_high": high_52w,
@@ -245,34 +433,43 @@ def _summary_for(symbol: str) -> dict[str, Any]:
     }
 
 
-def _compare(symbol1: str, symbol2: str, days: int) -> pd.DataFrame:
-    df1_all = _read_csv_safe(symbol1)
-    df2_all = _read_csv_safe(symbol2)
-    if df1_all.empty or df2_all.empty:
-        return pd.DataFrame(columns=["date", _norm_symbol(symbol1), _norm_symbol(symbol2)])
+def _compare(symbol1: str, symbol2: str, days: int) -> list[dict[str, Any]]:
+    r1_all = _read_csv_safe(symbol1)
+    r2_all = _read_csv_safe(symbol2)
+    if not r1_all or not r2_all:
+        return []
 
-    df1 = df1_all.tail(days)[["date", "close"]].rename(columns={"close": _norm_symbol(symbol1)})
-    df2 = df2_all.tail(days)[["date", "close"]].rename(columns={"close": _norm_symbol(symbol2)})
-    merged = pd.merge(df1, df2, on="date", how="inner").sort_values("date")
-    return merged
+    r1 = r1_all[-days:]
+    r2 = r2_all[-days:]
+    k1 = _norm_symbol(symbol1)
+    k2 = _norm_symbol(symbol2)
+
+    m1 = {r["date"]: r.get("close") for r in r1 if r.get("date")}
+    m2 = {r["date"]: r.get("close") for r in r2 if r.get("date")}
+
+    dates = sorted(set(m1.keys()) & set(m2.keys()))
+    out: list[dict[str, Any]] = []
+    for d in dates:
+        out.append({"date": d, k1: m1.get(d), k2: m2.get(d)})
+    return out
 
 
 def _top_movers() -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     for sym in COMPANIES.keys():
-        df = _read_csv_safe(sym)
-        if df.empty:
+        records = _read_csv_safe(sym)
+        if not records:
             continue
-        latest = df.iloc[-1]
+        latest = records[-1]
         dr = latest.get("daily_return")
-        if pd.isna(dr):
+        if dr is None:
             continue
         items.append(
             {
                 "symbol": sym,
                 "date": latest.get("date"),
-                "close": float(latest.get("close")) if pd.notnull(latest.get("close")) else None,
-                "daily_return": float(dr) if pd.notnull(dr) else None,
+                "close": latest.get("close"),
+                "daily_return": dr,
             }
         )
 
@@ -320,9 +517,9 @@ def create_app() -> Flask:
             return jsonify({"error": f"Unknown symbol: {sym}"}), 404
 
         # Return empty JSON ([]) for missing/invalid data instead of erroring.
-        df = _read_csv_safe(sym)
-        df = df.tail(days_int) if not df.empty else df
-        return jsonify(_df_records(df)) if not df.empty else jsonify([])
+        records = _read_csv_safe(sym)
+        records = records[-days_int:] if records else records
+        return jsonify(_df_records(records)) if records else jsonify([])
 
     @app.get("/summary/<path:symbol>")
     def summary(symbol: str):
@@ -357,7 +554,7 @@ def create_app() -> Flask:
 
         # Return empty JSON ([]) if data is missing or there is no overlap.
         merged = _compare(s1, s2, days=days_int)
-        return jsonify(_df_records(merged)) if not merged.empty else jsonify([])
+        return jsonify(_df_records(merged)) if merged else jsonify([])
 
     @app.get("/top-gainers")
     def top_gainers():
